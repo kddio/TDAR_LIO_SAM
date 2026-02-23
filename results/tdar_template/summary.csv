@@ -1,0 +1,4 @@
+case,ate_rmse_m,rpe_rmse_m,avg_compute_ms,acc_residual,gyro_residual,fallback_rate
+baseline,NA,NA,NA,NA,NA,NA
+tdar_endpoint,NA,NA,NA,NA,NA,NA
+tdar_adaptive_gyro,NA,NA,NA,NA,NA,NA

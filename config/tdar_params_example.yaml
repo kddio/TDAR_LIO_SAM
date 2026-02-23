@@ -1,0 +1,30 @@
+tdar_lio_sam:
+  # Global switch
+  tdar_enable: true
+
+  # Neighborhood selection
+  tdar_K: 8
+  tdar_window_sec: 0.03
+
+  # Exponential factors
+  tdar_alpha: 30.0
+  tdar_beta: 3.0
+  tdar_gamma: 3.0
+
+  # Exponents
+  tdar_p: 1.0
+  tdar_q: 1.0
+  tdar_r: 1.0
+
+  # State-adaptive lambda
+  tdar_jerk_th: 2.0
+  tdar_lambda_low: 1.0
+  tdar_lambda_high: 2.5
+
+  # Optional gyro variation factor
+  tdar_use_gyro_factor: true
+
+  # Robustness and diagnostics
+  tdar_jerk_gyro_coeff: 0.5
+  tdar_min_sum_w: 1.0e-8
+  tdar_diag_log: true

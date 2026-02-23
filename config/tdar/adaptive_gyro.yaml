@@ -1,0 +1,14 @@
+tdar_lio_sam:
+  tdar_enable: true
+  tdar_K: 8
+  tdar_window_sec: 0.03
+  tdar_alpha: 30.0
+  tdar_beta: 3.0
+  tdar_gamma: 3.0
+  tdar_p: 1.0
+  tdar_q: 1.0
+  tdar_r: 1.0
+  tdar_jerk_th: 2.0
+  tdar_lambda_low: 1.0
+  tdar_lambda_high: 2.5
+  tdar_use_gyro_factor: true

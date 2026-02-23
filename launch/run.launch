@@ -1,0 +1,23 @@
+<launch>
+
+    <arg name="project" default="tdar_lio_sam"/>
+    <arg name="config_file" default="$(find tdar_lio_sam)/config/params.yaml"/>
+    <arg name="tdar_config" default="$(find tdar_lio_sam)/config/tdar/disabled.yaml"/>
+    
+    <!-- Parameters -->
+    <rosparam file="$(arg config_file)" command="load" />
+    <rosparam file="$(arg tdar_config)" command="load" />
+
+    <!--- LOAM -->
+    <include file="$(find tdar_lio_sam)/launch/include/module_loam.launch" />
+
+    <!--- Robot State TF -->
+    <include file="$(find tdar_lio_sam)/launch/include/module_robot_state_publisher.launch" />
+
+    <!--- Run Navsat -->
+    <include file="$(find tdar_lio_sam)/launch/include/module_navsat.launch" />
+
+    <!--- Run Rviz-->
+    <include file="$(find tdar_lio_sam)/launch/include/module_rviz.launch" />
+
+</launch>
