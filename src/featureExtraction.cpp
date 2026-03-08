@@ -28,6 +28,7 @@ public:
     pcl::PointCloud<PointType>::Ptr surfaceCloud;
 
     pcl::VoxelGrid<PointType> downSizeFilter;
+    pcl::KdTreeFLANN<PointType>::Ptr kdtreeMetadataRestore;
 
     tdar_lio_sam::cloud_info cloudInfo;
     std_msgs::Header cloudHeader;
@@ -57,10 +58,34 @@ public:
         extractedCloud.reset(new pcl::PointCloud<PointType>());
         cornerCloud.reset(new pcl::PointCloud<PointType>());
         surfaceCloud.reset(new pcl::PointCloud<PointType>());
+        kdtreeMetadataRestore.reset(new pcl::KdTreeFLANN<PointType>());
 
         cloudCurvature = new float[N_SCAN*Horizon_SCAN];
         cloudNeighborPicked = new int[N_SCAN*Horizon_SCAN];
         cloudLabel = new int[N_SCAN*Horizon_SCAN];
+    }
+
+    void restoreDiscreteMetadata(
+        const pcl::PointCloud<PointType>::Ptr& source_cloud,
+        const pcl::PointCloud<PointType>::Ptr& target_cloud)
+    {
+        if (!source_cloud || !target_cloud || source_cloud->empty() || target_cloud->empty())
+            return;
+
+        kdtreeMetadataRestore->setInputCloud(source_cloud);
+        std::vector<int> pointSearchInd(1, 0);
+        std::vector<float> pointSearchSqDis(1, 0.0f);
+
+        for (auto& point : target_cloud->points)
+        {
+            if (kdtreeMetadataRestore->nearestKSearch(point, 1, pointSearchInd, pointSearchSqDis) != 1)
+                continue;
+
+            const PointType& nearest = source_cloud->points[pointSearchInd[0]];
+            point.ring = nearest.ring;
+            point.column = nearest.column;
+            point.range = nearest.range;
+        }
     }
 
     void laserCloudInfoHandler(const tdar_lio_sam::cloud_infoConstPtr& msgIn)
@@ -232,6 +257,7 @@ public:
             surfaceCloudScanDS->clear();
             downSizeFilter.setInputCloud(surfaceCloudScan);
             downSizeFilter.filter(*surfaceCloudScanDS);
+            restoreDiscreteMetadata(surfaceCloudScan, surfaceCloudScanDS);
 
             *surfaceCloud += *surfaceCloudScanDS;
         }

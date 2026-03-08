@@ -1,0 +1,13 @@
+tdar_lio_sam:
+  cindex_enable: false
+  cindex_azimuth_bins: 1800
+  cindex_key_window_margin: 2
+  cindex_beam_window_margin: 1
+  cindex_query_radius: 1.0
+  cindex_use_ring_recovery: true
+  cindex_use_query_column: false
+  cindex_max_candidates_before_radius: 512
+  cindex_max_candidates_after_radius: 128
+  cindex_vertical_angle_bottom_deg: -15.0
+  cindex_vertical_angle_top_deg: 15.0
+  cindex_diag_log: false

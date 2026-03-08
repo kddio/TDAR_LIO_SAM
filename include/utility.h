@@ -53,6 +53,7 @@
 #include <array>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <unordered_map>
 
 #include <flann/util/serialization.h>
@@ -99,7 +100,38 @@ struct Serializer<std::unordered_map<K, V, Hash, Pred, Alloc>>
 
 using namespace std;
 
-typedef pcl::PointXYZI PointType;
+struct PointXYZIRCR
+{
+    PCL_ADD_POINT4D
+    PCL_ADD_INTENSITY;
+    uint16_t ring;
+    int32_t column;
+    float range;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    PointXYZIRCR()
+        : ring(0), column(-1), range(0.0f)
+    {
+        x = 0.0f;
+        y = 0.0f;
+        z = 0.0f;
+        data[3] = 1.0f;
+        intensity = 0.0f;
+    }
+} EIGEN_ALIGN16;
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(
+    PointXYZIRCR,
+    (float, x, x)
+    (float, y, y)
+    (float, z, z)
+    (float, intensity, intensity)
+    (uint16_t, ring, ring)
+    (int32_t, column, column)
+    (float, range, range)
+)
+
+typedef PointXYZIRCR PointType;
 
 enum class SensorType { VELODYNE, OUSTER, LIVOX };
 
@@ -173,6 +205,20 @@ public:
     double tdarJerkGyroCoeff;
     double tdarMinSumW;
     bool tdarDiagLog;
+
+    // C-Index style local map search
+    bool cindexEnable;
+    int cindexAzimuthBins;
+    int cindexKeyWindowMargin;
+    int cindexBeamWindowMargin;
+    float cindexQueryRadius;
+    bool cindexUseRingRecovery;
+    bool cindexUseQueryColumn;
+    int cindexMaxCandidatesBeforeRadius;
+    int cindexMaxCandidatesAfterRadius;
+    float cindexVerticalAngleBottomDeg;
+    float cindexVerticalAngleTopDeg;
+    bool cindexDiagLog;
 
     // LOAM
     float edgeThreshold;
@@ -292,6 +338,19 @@ public:
         nh.param<double>("tdar_lio_sam/tdar_jerk_gyro_coeff", tdarJerkGyroCoeff, 0.5);
         nh.param<double>("tdar_lio_sam/tdar_min_sum_w", tdarMinSumW, 1e-8);
         nh.param<bool>("tdar_lio_sam/tdar_diag_log", tdarDiagLog, true);
+
+        nh.param<bool>("tdar_lio_sam/cindex_enable", cindexEnable, false);
+        nh.param<int>("tdar_lio_sam/cindex_azimuth_bins", cindexAzimuthBins, 1800);
+        nh.param<int>("tdar_lio_sam/cindex_key_window_margin", cindexKeyWindowMargin, 2);
+        nh.param<int>("tdar_lio_sam/cindex_beam_window_margin", cindexBeamWindowMargin, 1);
+        nh.param<float>("tdar_lio_sam/cindex_query_radius", cindexQueryRadius, 1.0f);
+        nh.param<bool>("tdar_lio_sam/cindex_use_ring_recovery", cindexUseRingRecovery, true);
+        nh.param<bool>("tdar_lio_sam/cindex_use_query_column", cindexUseQueryColumn, false);
+        nh.param<int>("tdar_lio_sam/cindex_max_candidates_before_radius", cindexMaxCandidatesBeforeRadius, 512);
+        nh.param<int>("tdar_lio_sam/cindex_max_candidates_after_radius", cindexMaxCandidatesAfterRadius, 128);
+        nh.param<float>("tdar_lio_sam/cindex_vertical_angle_bottom_deg", cindexVerticalAngleBottomDeg, -15.0f);
+        nh.param<float>("tdar_lio_sam/cindex_vertical_angle_top_deg", cindexVerticalAngleTopDeg, 15.0f);
+        nh.param<bool>("tdar_lio_sam/cindex_diag_log", cindexDiagLog, true);
 
         nh.param<float>("tdar_lio_sam/edgeThreshold", edgeThreshold, 0.1);
         nh.param<float>("tdar_lio_sam/surfThreshold", surfThreshold, 0.1);

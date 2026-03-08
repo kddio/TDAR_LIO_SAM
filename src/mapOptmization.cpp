@@ -1,6 +1,9 @@
 #include "utility.h"
+#include "local_cindex.h"
 #include "tdar_lio_sam/cloud_info.h"
 #include "tdar_lio_sam/save_map.h"
+
+#include <chrono>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -74,6 +77,7 @@ public:
     ros::Publisher pubLoopConstraintEdge;
 
     ros::Publisher pubSLAMInfo;
+    ros::Publisher pubCIndexDiag;
 
     ros::Subscriber subCloud;
     ros::Subscriber subGPS;
@@ -112,9 +116,31 @@ public:
     pcl::PointCloud<PointType>::Ptr laserCloudSurfFromMap;
     pcl::PointCloud<PointType>::Ptr laserCloudCornerFromMapDS;
     pcl::PointCloud<PointType>::Ptr laserCloudSurfFromMapDS;
+    pcl::KdTreeFLANN<PointType>::Ptr kdtreeMetadataRestore;
 
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerFromMap;
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfFromMap;
+    tdar_lio_sam::LocalCIndex cornerLocalIndex;
+    tdar_lio_sam::LocalCIndex surfLocalIndex;
+    tdar_lio_sam::LocalCIndexConfig localCIndexConfig;
+    Eigen::Affine3f localCIndexReferencePose = Eigen::Affine3f::Identity();
+    bool localCIndexReady = false;
+    std::atomic<long long> cornerQueryCount{0};
+    std::atomic<long long> cornerBinsScanned{0};
+    std::atomic<long long> cornerCandidatesBeforeRadius{0};
+    std::atomic<long long> cornerCandidatesAfterRadius{0};
+    std::atomic<long long> cornerFallbackCount{0};
+    std::atomic<long long> cornerOverflowCount{0};
+    std::atomic<long long> cornerExactRingCount{0};
+    std::atomic<long long> cornerSearchBackendUs{0};
+    std::atomic<long long> surfQueryCount{0};
+    std::atomic<long long> surfBinsScanned{0};
+    std::atomic<long long> surfCandidatesBeforeRadius{0};
+    std::atomic<long long> surfCandidatesAfterRadius{0};
+    std::atomic<long long> surfFallbackCount{0};
+    std::atomic<long long> surfOverflowCount{0};
+    std::atomic<long long> surfExactRingCount{0};
+    std::atomic<long long> surfSearchBackendUs{0};
 
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurroundingKeyPoses;
     pcl::KdTreeFLANN<PointType>::Ptr kdtreeHistoryKeyPoses;
@@ -182,11 +208,27 @@ public:
         pubCloudRegisteredRaw = nh.advertise<sensor_msgs::PointCloud2>("tdar_lio_sam/mapping/cloud_registered_raw", 1);
 
         pubSLAMInfo           = nh.advertise<tdar_lio_sam::cloud_info>("tdar_lio_sam/mapping/slam_info", 1);
+        pubCIndexDiag         = nh.advertise<std_msgs::Float64MultiArray>("tdar_lio_sam/cindex/search_diag", 20);
 
         downSizeFilterCorner.setLeafSize(mappingCornerLeafSize, mappingCornerLeafSize, mappingCornerLeafSize);
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
         downSizeFilterICP.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
+
+        localCIndexConfig.num_rings = std::max(1, N_SCAN);
+        localCIndexConfig.num_azimuth_bins = std::max(1, cindexAzimuthBins);
+        localCIndexConfig.input_horizon_scan = std::max(1, Horizon_SCAN);
+        localCIndexConfig.key_window_margin = std::max(0, cindexKeyWindowMargin);
+        localCIndexConfig.beam_window_margin = std::max(0, cindexBeamWindowMargin);
+        localCIndexConfig.default_radius = std::max(0.1f, cindexQueryRadius);
+        localCIndexConfig.use_ring_recovery = cindexUseRingRecovery && sensor != SensorType::LIVOX;
+        localCIndexConfig.use_query_column = cindexUseQueryColumn;
+        localCIndexConfig.max_candidates_before_radius = std::max(0, cindexMaxCandidatesBeforeRadius);
+        localCIndexConfig.max_candidates_after_radius = std::max(0, cindexMaxCandidatesAfterRadius);
+        localCIndexConfig.vertical_angle_bottom_deg = cindexVerticalAngleBottomDeg;
+        localCIndexConfig.vertical_angle_top_deg = cindexVerticalAngleTopDeg;
+        cornerLocalIndex.setConfig(localCIndexConfig);
+        surfLocalIndex.setConfig(localCIndexConfig);
 
         allocateMemory();
     }
@@ -226,12 +268,183 @@ public:
 
         kdtreeCornerFromMap.reset(new pcl::KdTreeFLANN<PointType>());
         kdtreeSurfFromMap.reset(new pcl::KdTreeFLANN<PointType>());
+        kdtreeMetadataRestore.reset(new pcl::KdTreeFLANN<PointType>());
 
         for (int i = 0; i < 6; ++i){
             transformTobeMapped[i] = 0;
         }
 
         matP = cv::Mat(6, 6, CV_32F, cv::Scalar::all(0));
+    }
+
+    void buildLocalMapSearchBackend()
+    {
+        kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
+        kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
+
+        localCIndexReady = false;
+
+        if (cindexEnable)
+        {
+            // Build the local index once per scan-to-map cycle using the current pose guess as the reference frame.
+            localCIndexReferencePose = trans2Affine3f(transformTobeMapped);
+            cornerLocalIndex.build(laserCloudCornerFromMapDS, localCIndexReferencePose);
+            surfLocalIndex.build(laserCloudSurfFromMapDS, localCIndexReferencePose);
+            localCIndexReady = !cornerLocalIndex.empty() || !surfLocalIndex.empty();
+            return;
+        }
+    }
+
+    bool findMapNeighbors(
+        const PointType& query_point,
+        bool use_corner_map,
+        int k,
+        std::vector<int>* pointSearchInd,
+        std::vector<float>* pointSearchSqDis,
+        tdar_lio_sam::LocalCIndexQueryStats* queryStats = nullptr)
+    {
+        if (pointSearchInd == nullptr || pointSearchSqDis == nullptr)
+            return false;
+
+        pointSearchInd->clear();
+        pointSearchSqDis->clear();
+
+        if (cindexEnable && localCIndexReady)
+        {
+            tdar_lio_sam::LocalCIndex& index = use_corner_map ? cornerLocalIndex : surfLocalIndex;
+            if (!index.empty())
+            {
+                if (index.topKWithinRadius(
+                        query_point,
+                        std::max(0.1f, cindexQueryRadius),
+                        k,
+                        pointSearchInd,
+                        pointSearchSqDis,
+                        queryStats) == k)
+                {
+                    return true;
+                }
+            }
+
+            if (queryStats != nullptr)
+                queryStats->fallback_to_global = true;
+        }
+
+        pcl::KdTreeFLANN<PointType>::Ptr& tree = use_corner_map ? kdtreeCornerFromMap : kdtreeSurfFromMap;
+        if (!tree)
+            return false;
+
+        return tree->nearestKSearch(query_point, k, *pointSearchInd, *pointSearchSqDis) == k;
+    }
+
+    void restoreDiscreteMetadata(
+        const pcl::PointCloud<PointType>::Ptr& source_cloud,
+        const pcl::PointCloud<PointType>::Ptr& target_cloud)
+    {
+        if (!source_cloud || !target_cloud || source_cloud->empty() || target_cloud->empty())
+            return;
+
+        kdtreeMetadataRestore->setInputCloud(source_cloud);
+        std::vector<int> pointSearchInd(1, 0);
+        std::vector<float> pointSearchSqDis(1, 0.0f);
+
+        for (auto& point : target_cloud->points)
+        {
+            if (kdtreeMetadataRestore->nearestKSearch(point, 1, pointSearchInd, pointSearchSqDis) != 1)
+                continue;
+
+            const PointType& nearest = source_cloud->points[pointSearchInd[0]];
+            point.ring = nearest.ring;
+            point.column = nearest.column;
+            point.range = nearest.range;
+        }
+    }
+
+    void resetCIndexSearchStats()
+    {
+        cornerQueryCount.store(0);
+        cornerBinsScanned.store(0);
+        cornerCandidatesBeforeRadius.store(0);
+        cornerCandidatesAfterRadius.store(0);
+        cornerFallbackCount.store(0);
+        cornerOverflowCount.store(0);
+        cornerExactRingCount.store(0);
+        cornerSearchBackendUs.store(0);
+        surfQueryCount.store(0);
+        surfBinsScanned.store(0);
+        surfCandidatesBeforeRadius.store(0);
+        surfCandidatesAfterRadius.store(0);
+        surfFallbackCount.store(0);
+        surfOverflowCount.store(0);
+        surfExactRingCount.store(0);
+        surfSearchBackendUs.store(0);
+    }
+
+    void accumulateCIndexQueryStats(bool is_corner_branch, const tdar_lio_sam::LocalCIndexQueryStats& stats, long long search_us)
+    {
+        std::atomic<long long>& query_count = is_corner_branch ? cornerQueryCount : surfQueryCount;
+        std::atomic<long long>& bins_scanned = is_corner_branch ? cornerBinsScanned : surfBinsScanned;
+        std::atomic<long long>& candidates_before = is_corner_branch ? cornerCandidatesBeforeRadius : surfCandidatesBeforeRadius;
+        std::atomic<long long>& candidates_after = is_corner_branch ? cornerCandidatesAfterRadius : surfCandidatesAfterRadius;
+        std::atomic<long long>& fallback_count = is_corner_branch ? cornerFallbackCount : surfFallbackCount;
+        std::atomic<long long>& overflow_count = is_corner_branch ? cornerOverflowCount : surfOverflowCount;
+        std::atomic<long long>& exact_ring_count = is_corner_branch ? cornerExactRingCount : surfExactRingCount;
+        std::atomic<long long>& backend_us = is_corner_branch ? cornerSearchBackendUs : surfSearchBackendUs;
+
+        query_count.fetch_add(1, std::memory_order_relaxed);
+        bins_scanned.fetch_add(stats.bins_scanned, std::memory_order_relaxed);
+        candidates_before.fetch_add(stats.candidates_before_radius, std::memory_order_relaxed);
+        candidates_after.fetch_add(stats.candidates_after_radius, std::memory_order_relaxed);
+        backend_us.fetch_add(search_us, std::memory_order_relaxed);
+        if (stats.fallback_to_global)
+            fallback_count.fetch_add(1, std::memory_order_relaxed);
+        if (stats.overflow_to_global)
+            overflow_count.fetch_add(1, std::memory_order_relaxed);
+        if (stats.used_exact_ring)
+            exact_ring_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void publishCIndexSearchDiag(bool is_corner_branch)
+    {
+        if (!cindexEnable)
+            return;
+
+        const long long query_count = is_corner_branch ? cornerQueryCount.load() : surfQueryCount.load();
+        const long long bins_scanned = is_corner_branch ? cornerBinsScanned.load() : surfBinsScanned.load();
+        const long long candidates_before = is_corner_branch ? cornerCandidatesBeforeRadius.load() : surfCandidatesBeforeRadius.load();
+        const long long candidates_after = is_corner_branch ? cornerCandidatesAfterRadius.load() : surfCandidatesAfterRadius.load();
+        const long long fallback_count = is_corner_branch ? cornerFallbackCount.load() : surfFallbackCount.load();
+        const long long overflow_count = is_corner_branch ? cornerOverflowCount.load() : surfOverflowCount.load();
+        const long long exact_ring_count = is_corner_branch ? cornerExactRingCount.load() : surfExactRingCount.load();
+        const long long backend_us = is_corner_branch ? cornerSearchBackendUs.load() : surfSearchBackendUs.load();
+
+        std_msgs::Float64MultiArray msg;
+        msg.data.resize(10, 0.0);
+        msg.data[0] = timeLaserInfoCur;
+        msg.data[1] = is_corner_branch ? 0.0 : 1.0;
+        msg.data[2] = static_cast<double>(query_count);
+        msg.data[3] = query_count > 0 ? static_cast<double>(bins_scanned) / query_count : 0.0;
+        msg.data[4] = query_count > 0 ? static_cast<double>(candidates_before) / query_count : 0.0;
+        msg.data[5] = query_count > 0 ? static_cast<double>(candidates_after) / query_count : 0.0;
+        msg.data[6] = query_count > 0 ? static_cast<double>(fallback_count) / query_count : 0.0;
+        msg.data[7] = query_count > 0 ? static_cast<double>(exact_ring_count) / query_count : 0.0;
+        msg.data[8] = query_count > 0 ? static_cast<double>(backend_us) * 1e-3 / query_count : 0.0;
+        msg.data[9] = query_count > 0 ? static_cast<double>(overflow_count) / query_count : 0.0;
+        pubCIndexDiag.publish(msg);
+
+        if (cindexDiagLog)
+        {
+            ROS_INFO_STREAM_THROTTLE(
+                1.0,
+                "[CINDEX-" << (is_corner_branch ? "CORNER" : "SURF") << "] queries=" << query_count
+                << ", avg_bins=" << msg.data[3]
+                << ", avg_candidates_before=" << msg.data[4]
+                << ", avg_candidates_after=" << msg.data[5]
+                << ", fallback_rate=" << msg.data[6]
+                << ", exact_ring_rate=" << msg.data[7]
+                << ", avg_search_ms=" << msg.data[8]
+                << ", overflow_rate=" << msg.data[9]);
+        }
     }
 
     void laserCloudInfoHandler(const tdar_lio_sam::cloud_infoConstPtr& msgIn)
@@ -281,6 +494,9 @@ public:
         po->y = transPointAssociateToMap(1,0) * pi->x + transPointAssociateToMap(1,1) * pi->y + transPointAssociateToMap(1,2) * pi->z + transPointAssociateToMap(1,3);
         po->z = transPointAssociateToMap(2,0) * pi->x + transPointAssociateToMap(2,1) * pi->y + transPointAssociateToMap(2,2) * pi->z + transPointAssociateToMap(2,3);
         po->intensity = pi->intensity;
+        po->ring = pi->ring;
+        po->column = pi->column;
+        po->range = pi->range;
     }
 
     pcl::PointCloud<PointType>::Ptr transformPointCloud(pcl::PointCloud<PointType>::Ptr cloudIn, PointTypePose* transformIn)
@@ -300,6 +516,9 @@ public:
             cloudOut->points[i].y = transCur(1,0) * pointFrom.x + transCur(1,1) * pointFrom.y + transCur(1,2) * pointFrom.z + transCur(1,3);
             cloudOut->points[i].z = transCur(2,0) * pointFrom.x + transCur(2,1) * pointFrom.y + transCur(2,2) * pointFrom.z + transCur(2,3);
             cloudOut->points[i].intensity = pointFrom.intensity;
+            cloudOut->points[i].ring = pointFrom.ring;
+            cloudOut->points[i].column = pointFrom.column;
+            cloudOut->points[i].range = pointFrom.range;
         }
         return cloudOut;
     }
@@ -926,10 +1145,12 @@ public:
         // Downsample the surrounding corner key frames (or map)
         downSizeFilterCorner.setInputCloud(laserCloudCornerFromMap);
         downSizeFilterCorner.filter(*laserCloudCornerFromMapDS);
+        restoreDiscreteMetadata(laserCloudCornerFromMap, laserCloudCornerFromMapDS);
         laserCloudCornerFromMapDSNum = laserCloudCornerFromMapDS->size();
         // Downsample the surrounding surf key frames (or map)
         downSizeFilterSurf.setInputCloud(laserCloudSurfFromMap);
         downSizeFilterSurf.filter(*laserCloudSurfFromMapDS);
+        restoreDiscreteMetadata(laserCloudSurfFromMap, laserCloudSurfFromMapDS);
         laserCloudSurfFromMapDSNum = laserCloudSurfFromMapDS->size();
 
         // clear map cache if too large
@@ -958,11 +1179,13 @@ public:
         laserCloudCornerLastDS->clear();
         downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
         downSizeFilterCorner.filter(*laserCloudCornerLastDS);
+        restoreDiscreteMetadata(laserCloudCornerLast, laserCloudCornerLastDS);
         laserCloudCornerLastDSNum = laserCloudCornerLastDS->size();
 
         laserCloudSurfLastDS->clear();
         downSizeFilterSurf.setInputCloud(laserCloudSurfLast);
         downSizeFilterSurf.filter(*laserCloudSurfLastDS);
+        restoreDiscreteMetadata(laserCloudSurfLast, laserCloudSurfLastDS);
         laserCloudSurfLastDSNum = laserCloudSurfLastDS->size();
     }
 
@@ -981,10 +1204,19 @@ public:
             PointType pointOri, pointSel, coeff;
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
+            tdar_lio_sam::LocalCIndexQueryStats queryStats;
 
             pointOri = laserCloudCornerLastDS->points[i];
             pointAssociateToMap(&pointOri, &pointSel);
-            kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+            const auto search_tic = std::chrono::steady_clock::now();
+            if (!findMapNeighbors(pointSel, true, 5, &pointSearchInd, &pointSearchSqDis, &queryStats))
+                continue;
+            const auto search_toc = std::chrono::steady_clock::now();
+            if (cindexEnable)
+            {
+                const long long search_us = std::chrono::duration_cast<std::chrono::microseconds>(search_toc - search_tic).count();
+                accumulateCIndexQueryStats(true, queryStats, search_us);
+            }
 
             cv::Mat matA1(3, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matD1(1, 3, CV_32F, cv::Scalar::all(0));
@@ -1073,10 +1305,19 @@ public:
             PointType pointOri, pointSel, coeff;
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
+            tdar_lio_sam::LocalCIndexQueryStats queryStats;
 
             pointOri = laserCloudSurfLastDS->points[i];
             pointAssociateToMap(&pointOri, &pointSel); 
-            kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+            const auto search_tic = std::chrono::steady_clock::now();
+            if (!findMapNeighbors(pointSel, false, 5, &pointSearchInd, &pointSearchSqDis, &queryStats))
+                continue;
+            const auto search_toc = std::chrono::steady_clock::now();
+            if (cindexEnable)
+            {
+                const long long search_us = std::chrono::duration_cast<std::chrono::microseconds>(search_toc - search_tic).count();
+                accumulateCIndexQueryStats(false, queryStats, search_us);
+            }
 
             Eigen::Matrix<float, 5, 3> matA0;
             Eigen::Matrix<float, 5, 1> matB0;
@@ -1286,8 +1527,8 @@ public:
 
         if (laserCloudCornerLastDSNum > edgeFeatureMinValidNum && laserCloudSurfLastDSNum > surfFeatureMinValidNum)
         {
-            kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
-            kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
+            resetCIndexSearchStats();
+            buildLocalMapSearchBackend();
 
             for (int iterCount = 0; iterCount < 30; iterCount++)
             {
@@ -1304,6 +1545,8 @@ public:
             }
 
             transformUpdate();
+            publishCIndexSearchDiag(true);
+            publishCIndexSearchDiag(false);
         } else {
             ROS_WARN("Not enough features! Only %d edge and %d planar features available.", laserCloudCornerLastDSNum, laserCloudSurfLastDSNum);
         }

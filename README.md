@@ -209,15 +209,36 @@ Example file:
 `run.launch` now supports:
 - `config_file` (base params)
 - `tdar_config` (TDAR overlay)
+- `cindex_config` (local C-Index overlay)
 
 Modes:
 - Baseline (original behavior): `config/tdar/disabled.yaml`
 - Minimal TDAR endpoint replacement: `config/tdar/endpoint.yaml`
 - Enhanced TDAR (adaptive + gyro factor): `config/tdar/adaptive_gyro.yaml`
+- C-Index disabled: `config/cindex/disabled.yaml`
+- C-Index enabled: `config/cindex/enabled.yaml`
+
+Key C-Index params:
+- `cindex_use_ring_recovery`: reuse stored ring or recover pseudo beam from the local reference frame
+- `cindex_use_query_column`: use current scan column as query azimuth bin; keep `false` unless `Horizon_SCAN` matches the sensor's real column layout
+- `cindex_max_candidates_before_radius`: guard against excessive key-range scan candidates
+- `cindex_max_candidates_after_radius`: guard against excessive verified radius candidates
 
 Run example:
 ```bash
 roslaunch tdar_lio_sam run.launch tdar_config:=$(rospack find tdar_lio_sam)/config/tdar/endpoint.yaml
+```
+
+Enable C-Index example:
+```bash
+roslaunch tdar_lio_sam run.launch cindex_config:=$(rospack find tdar_lio_sam)/config/cindex/enabled.yaml
+```
+
+If you want to test direct query-column binning, add:
+```bash
+roslaunch tdar_lio_sam run.launch \
+  cindex_config:=$(rospack find tdar_lio_sam)/config/cindex/enabled.yaml \
+  tdar_lio_sam/cindex_use_query_column:=true
 ```
 
 ### Diagnostics
@@ -225,6 +246,7 @@ roslaunch tdar_lio_sam run.launch tdar_config:=$(rospack find tdar_lio_sam)/conf
 Published topics:
 - `/tdar_lio_sam/tdar/imu_preintegration_diag`
 - `/tdar_lio_sam/tdar/image_projection_diag`
+- `/tdar_lio_sam/cindex/search_diag`
 
 Message type: `std_msgs/Float64MultiArray`, data fields:
 - `[0] target_time`
@@ -238,6 +260,20 @@ Message type: `std_msgs/Float64MultiArray`, data fields:
 - `[10] compute_us`
 - `[11] acc_residual_vs_linear`
 - `[12] gyro_residual_vs_linear`
+
+`/tdar_lio_sam/cindex/search_diag` message type: `std_msgs/Float64MultiArray`, data fields:
+- `[0] target_time`
+- `[1] branch_tag` (`0`: corner, `1`: surf)
+- `[2] query_count`
+- `[3] avg_bins_scanned`
+- `[4] avg_candidates_before_radius`
+- `[5] avg_candidates_after_radius`
+- `[6] fallback_rate`
+- `[7] exact_ring_rate`
+- `[8] avg_search_ms`
+- `[9] overflow_rate`
+
+`fallback_rate` here means the fraction of queries that were not finally served by the key-based candidate retrieval path and had to use a fallback search path.
 
 ### Benchmark Script (baseline vs endpoint TDAR vs adaptive+gyro)
 
@@ -253,22 +289,38 @@ Outputs:
 - `<result_dir>/<case>/output.bag`
 - `<result_dir>/<case>/ape.txt`, `rpe.txt`
 - `<result_dir>/<case>/tdar_diag_stats.json`
+- `<result_dir>/<case>/cindex_diag_stats.json`
 - `<result_dir>/summary.csv`
 - `<result_dir>/summary.md`
 
 Helper scripts:
 - `scripts/export_tdar_diag_stats.py`: export residual/runtime/fallback stats from diagnostic topics
-- `scripts/export_experiment_table.py`: collect ATE/RPE/overhead into CSV + Markdown
+- `scripts/export_cindex_diag_stats.py`: export C-Index search statistics from diagnostic topics
+- `scripts/export_experiment_table.py`: collect ATE/RPE/TDAR/C-Index metrics into CSV + Markdown
+
+### Benchmark Script (baseline vs C-Index local search)
+
+Script:
+- `scripts/run_cindex_experiments.sh`
+
+Usage:
+```bash
+scripts/run_cindex_experiments.sh <input.bag> <gt_topic> <catkin_ws> [result_dir]
+```
+
+Behavior:
+- forces `tdar_config=config/tdar/disabled.yaml`
+- compares `config/cindex/disabled.yaml` vs `config/cindex/enabled.yaml`
 
 ### Result Table Template
 
 The benchmark script auto-generates this table at `<result_dir>/summary.md`:
 
-| Case | ATE RMSE (m) | RPE RMSE (m) | Avg TDAR Cost (ms) | Acc Residual | Gyro Residual | Fallback Rate |
-| --- | --- | --- | --- | --- | --- | --- |
-| baseline | NA | NA | NA | NA | NA | NA |
-| tdar_endpoint | NA | NA | NA | NA | NA | NA |
-| tdar_adaptive_gyro | NA | NA | NA | NA | NA | NA |
+| Case | ATE RMSE (m) | RPE RMSE (m) | Avg TDAR Cost (ms) | Acc Residual | Gyro Residual | TDAR Fallback | Avg CIndex Search (ms) | Avg Bins | Avg Radius Cands | CIndex Fallback | CIndex Overflow | Exact Ring Rate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
+| tdar_endpoint | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
+| tdar_adaptive_gyro | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
 
 ## Other notes
 

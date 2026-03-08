@@ -56,6 +56,20 @@ tdar_lio_sam:
   tdar_min_sum_w: 1.0e-8                     # fallback guard for degenerate weights
   tdar_diag_log: true                        # publish ROS log diagnostics
 
+  # Local C-Index style map search
+  cindex_enable: false                       # false: original KdTreeFLANN, true: local key-based candidate pruning
+  cindex_azimuth_bins: 1800                  # azimuth bins used by the local index
+  cindex_key_window_margin: 2                # extra azimuth bins added on top of dynamic radius-derived window
+  cindex_beam_window_margin: 1               # extra ring bins added on top of dynamic radius-derived window
+  cindex_query_radius: 1.0                   # radius candidate retrieval before top-K selection
+  cindex_use_ring_recovery: true             # recover pseudo ring from current local reference pose
+  cindex_use_query_column: false             # use current scan column for query azimuth binning; keep false unless Horizon_SCAN matches real sensor columns
+  cindex_max_candidates_before_radius: 512   # if pre-radius key-range candidates exceed this, fallback to exact global top-K
+  cindex_max_candidates_after_radius: 128    # if verified radius candidates exceed this, fallback to exact global top-K
+  cindex_vertical_angle_bottom_deg: -15.0    # sensor-specific, tune for non-VLP16 lidars
+  cindex_vertical_angle_top_deg: 15.0        # sensor-specific, tune for non-VLP16 lidars
+  cindex_diag_log: true                      # publish/query backend statistics for scan-to-map analysis
+
   # Extrinsics: T_lb (lidar -> imu)
   extrinsicTrans: [0.0, 0.0, 0.0]
   extrinsicRot: [-1, 0, 0,

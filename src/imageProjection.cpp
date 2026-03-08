@@ -690,6 +690,7 @@ public:
         newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
         newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
         newPoint.intensity = point->intensity;
+        newPoint.ring = point->ring;
 
         return newPoint;
     }
@@ -705,6 +706,9 @@ public:
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
             thisPoint.intensity = laserCloudIn->points[i].intensity;
+            thisPoint.ring = laserCloudIn->points[i].ring;
+            thisPoint.column = -1;
+            thisPoint.range = 0.0f;
 
             float range = pointDistance(thisPoint);
             if (range < lidarMinRange || range > lidarMaxRange)
@@ -739,6 +743,8 @@ public:
                 continue;
 
             thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);
+            thisPoint.column = columnIdn;
+            thisPoint.range = range;
 
             rangeMat.at<float>(rowIdn, columnIdn) = range;
 

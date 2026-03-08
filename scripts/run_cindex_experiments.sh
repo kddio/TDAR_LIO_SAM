@@ -3,18 +3,21 @@ set -euo pipefail
 
 if [[ $# -lt 3 ]]; then
   echo "Usage: $0 <input.bag> <gt_topic> <catkin_ws> [result_dir]"
-  echo "Example: $0 ~/bags/high_dynamic.bag /ground_truth/odometry ~/catkin_ws ./results/tdar_$(date +%Y%m%d_%H%M%S)"
+  echo "Example: $0 ~/bags/high_dynamic.bag /ground_truth/odometry ~/catkin_ws ./results/cindex_$(date +%Y%m%d_%H%M%S)"
   exit 1
 fi
 
 INPUT_BAG="$1"
 GT_TOPIC="$2"
 CATKIN_WS="$3"
-RESULT_ROOT="${4:-$(pwd)/results/tdar_$(date +%Y%m%d_%H%M%S)}"
+RESULT_ROOT="${4:-$(pwd)/results/cindex_$(date +%Y%m%d_%H%M%S)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BASE_CONFIG="${PKG_ROOT}/config/params.yaml"
+TDAR_DISABLED="${PKG_ROOT}/config/tdar/disabled.yaml"
+CINDEX_DISABLED="${PKG_ROOT}/config/cindex/disabled.yaml"
+CINDEX_ENABLED="${PKG_ROOT}/config/cindex/enabled.yaml"
 
 if [[ ! -f "${INPUT_BAG}" ]]; then
   echo "Bag not found: ${INPUT_BAG}"
@@ -33,10 +36,10 @@ mkdir -p "${RESULT_ROOT}"
 
 run_case() {
   local case_name="$1"
-  local tdar_cfg="$2"
+  local cindex_cfg="$2"
   local case_dir="${RESULT_ROOT}/${case_name}"
 
-  echo "[TDAR] Running case: ${case_name}"
+  echo "[CINDEX] Running case: ${case_name}"
   mkdir -p "${case_dir}"
 
   local roscore_pid=""
@@ -58,7 +61,10 @@ run_case() {
 
   rosparam set use_sim_time true
 
-  roslaunch tdar_lio_sam run.launch config_file:="${BASE_CONFIG}" tdar_config:="${tdar_cfg}" >"${case_dir}/launch.log" 2>&1 &
+  roslaunch tdar_lio_sam run.launch \
+    config_file:="${BASE_CONFIG}" \
+    tdar_config:="${TDAR_DISABLED}" \
+    cindex_config:="${cindex_cfg}" >"${case_dir}/launch.log" 2>&1 &
   launch_pid=$!
   sleep 8
 
@@ -94,13 +100,13 @@ run_case() {
     --output "${case_dir}/cindex_diag_stats.json"
 }
 
-run_case "baseline" "${PKG_ROOT}/config/tdar/disabled.yaml"
-run_case "tdar_endpoint" "${PKG_ROOT}/config/tdar/endpoint.yaml"
-run_case "tdar_adaptive_gyro" "${PKG_ROOT}/config/tdar/adaptive_gyro.yaml"
+run_case "baseline" "${CINDEX_DISABLED}"
+run_case "cindex_enabled" "${CINDEX_ENABLED}"
 
 python3 "${PKG_ROOT}/scripts/export_experiment_table.py" \
   --root "${RESULT_ROOT}" \
+  --cases baseline cindex_enabled \
   --output_csv "${RESULT_ROOT}/summary.csv" \
   --output_md "${RESULT_ROOT}/summary.md"
 
-echo "[TDAR] Experiment done. Summary: ${RESULT_ROOT}/summary.md"
+echo "[CINDEX] Experiment done. Summary: ${RESULT_ROOT}/summary.md"

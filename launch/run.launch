@@ -3,10 +3,12 @@
     <arg name="project" default="tdar_lio_sam"/>
     <arg name="config_file" default="$(find tdar_lio_sam)/config/params.yaml"/>
     <arg name="tdar_config" default="$(find tdar_lio_sam)/config/tdar/disabled.yaml"/>
+    <arg name="cindex_config" default="$(find tdar_lio_sam)/config/cindex/disabled.yaml"/>
     
     <!-- Parameters -->
     <rosparam file="$(arg config_file)" command="load" />
     <rosparam file="$(arg tdar_config)" command="load" />
+    <rosparam file="$(arg cindex_config)" command="load" />
 
     <!--- LOAM -->
     <include file="$(find tdar_lio_sam)/launch/include/module_loam.launch" />
