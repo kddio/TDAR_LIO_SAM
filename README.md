@@ -1,6 +1,6 @@
 # TDAR-LIO-SAM
 
-**A real-time lidar-inertial odometry package. We strongly recommend the users read this document thoroughly and test the package with the provided dataset first. A video of the demonstration of the method can be found on [YouTube](https://www.youtube.com/watch?v=A0H8CoORZJU).**
+**TDAR-LIO-SAM is an optimized fork of the original LIO-SAM. It keeps the core lidar-inertial odometry pipeline and factor-graph structure, while adding targeted improvements for IMU endpoint interpolation, local scan-to-map neighbor search, and experiment diagnostics. We strongly recommend reading this document thoroughly and testing the package with the provided dataset first. A video of the demonstration can be found on [YouTube](https://www.youtube.com/watch?v=A0H8CoORZJU).**
 
 <p align='center'>
     <img src="./config/doc/demo.gif" alt="drawing" width="800"/>
@@ -14,6 +14,8 @@
 </p>
 
 ## Menu
+
+  - [**Relation to original LIO-SAM**](#relation-to-original-lio-sam)
 
   - [**System architecture**](#system-architecture)
 
@@ -41,6 +43,23 @@
 
   - [**Acknowledgement**](#acknowledgement)
 
+## Relation to original LIO-SAM
+
+This repository is based on the original ROS1 implementation of [LIO-SAM](https://github.com/TixiaoShan/LIO-SAM) by Tixiao Shan.
+
+Compared with the original project, the overall processing pipeline remains the same:
+  - `imageProjection.cpp`
+  - `featureExtraction.cpp`
+  - `mapOptmization.cpp`
+  - `imuPreintegration.cpp`
+
+This fork focuses on optimizing and extending the existing LIO-SAM implementation instead of introducing a completely new SLAM system. The main changes in this repository are:
+  - **TDAR-IDW IMU endpoint interpolation** for scan deskew endpoints and IMU preintegration alignment.
+  - **Local C-Index map search** for scan-to-map neighbor candidate pruning with fallback to the original search path.
+  - **Config overlays, diagnostics, and benchmark scripts** for comparing baseline and enhanced modes.
+
+Unless explicitly enabled, the added modules can fall back to the original LIO-SAM behavior. In other words, this project should be understood as an enhanced and instrumented LIO-SAM fork.
+
 ## System architecture
 
 <p align='center'>
@@ -53,7 +72,7 @@ We design a system that maintains two graphs and runs up to 10x faster than real
 
 ## Dependency
 
-This is the original ROS1 implementation of LIO-SAM. For a ROS2 implementation see branch `ros2`.
+This project is built on top of the original ROS1 implementation of LIO-SAM. For a ROS2 implementation of the original project, see branch `ros2` in the upstream repository.
 
 - [ROS](http://wiki.ros.org/ROS/Installation) (tested with Kinetic and Melodic. Refer to [#206](https://github.com/TixiaoShan/LIO-SAM/issues/206) for Noetic)
   ```
@@ -73,7 +92,7 @@ Use the following commands to download and compile the package.
 
 ```
 cd ~/catkin_ws/src
-git clone https://github.com/TixiaoShan/LIO-SAM.git
+git clone https://github.com/kddio/TDAR_LIO_SAM.git
 cd ..
 catkin_make
 ```
